@@ -112,7 +112,6 @@ class Command(BaseCommand):
                 self.stderr.write(self.style.ERROR(f"Error during drag operation: {e}. Please ensure DRAGGABLE_ELEMENT_XPATH is correct and element is interactive."))
                 full_screenshot_path_after_drag = None
 
-            # CROP from the AFTER DRAG image, not before drag
             try:
                 if not full_screenshot_path_after_drag or not os.path.exists(full_screenshot_path_after_drag):
                     raise FileNotFoundError(f"Screenshot AFTER drag not found at {full_screenshot_path_after_drag}")
@@ -179,12 +178,11 @@ class Command(BaseCommand):
     # --- NEW METHOD TO PUSH DATA TO URL ---
     def _push_data_to_url(self, data, url):
         self.stdout.write(f"Attempting to push data to URL: {url}")
+        self.stdout.write(f"Payload being sent: {json.dumps(data, indent=2)}")
         try:
-            # Send a POST request with JSON data
             headers = {'Content-Type': 'application/json'}
             response = requests.post(url, json=data, headers=headers)
-
-            # Check for successful response (status code 200-299)
+            self.stdout.write(f"Raw server response: {response.status_code} {response.text}")
             if response.ok:
                 self.stdout.write(self.style.SUCCESS(f"Data successfully pushed to URL. Status Code: {response.status_code}"))
                 self.stdout.write(f"Response: {response.text}")
@@ -206,6 +204,7 @@ class Command(BaseCommand):
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
             chrome_options.add_experimental_option('useAutomationExtension', False)
             chrome_options.add_argument("--window-size=1920,1080")
+            chrome_options.add_argument("--log-level=3")  # Suppress Chrome warnings/errors in console
             # For debugging, remove headless if you want to see the browser:
             # chrome_options.add_argument('--headless')
             # chrome_options.add_argument('--disable-gpu')
@@ -214,65 +213,66 @@ class Command(BaseCommand):
             wait = WebDriverWait(driver, 20)
 
             while True:
-                self.stdout.write("\n" + "="*50)
-                self.stdout.write(f"STARTING NEW AUTOMATION CYCLE at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                self.stdout.write("="*50 + "\n")
+                try:
+                    self.stdout.write("\n" + "="*50)
+                    self.stdout.write(f"STARTING NEW AUTOMATION CYCLE at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    self.stdout.write("="*50 + "\n")
 
-                current_raw_time = datetime.now()
-                current_time = self._round_to_nearest_minutes(current_raw_time, minutes=10)
-                timestamp_str = current_time.strftime('%Y%m%d_%H%M%S')
-                self.stdout.write(f"Analysis timestamp (rounded): {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
-
-                full_screenshots_dir, drag_images_dir, analyzed_crops_dir = self._get_image_analysis_directories(timestamp_str)
-                self.stdout.write(f"Output directories created/ensured for this run:\n   Full: {full_screenshots_dir}\n   Drag: {drag_images_dir}\n   Analyzed: {analyzed_crops_dir}")
-
-                full_ss_before, cropped_tn_path, full_ss_after = self._automate_screenshot_capture(
-                    driver, wait, timestamp_str, full_screenshots_dir, drag_images_dir, analyzed_crops_dir
-                )
-
-                if not cropped_tn_path:
-                    self.stderr.write(self.style.ERROR("Failed to get the cropped Tamil Nadu image. Skipping analysis and database storage for this cycle."))
-                    time.sleep(300)
-                    continue
-
-                self.stdout.write("\n--- Starting Image Analysis ---")
-                cloud_percentage = self._analyze_cloud_percentage(cropped_tn_path)
-
-
-                if cloud_percentage is not None:
+                    current_raw_time = datetime.now()
+                    current_time = self._round_to_nearest_minutes(current_raw_time, minutes=10)
                     forecast_time = current_time + timedelta(minutes=10)
-                    location_name = "Ramanathapuram"
+                    timestamp_str = forecast_time.strftime('%Y%m%d_%H%M%S')
+                    self.stdout.write(f"Analysis timestamp (rounded): {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+                    self.stdout.write(f"Forecast timestamp (+10 min): {forecast_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
-                    # Use the same forecast_time for both DB and JSON
-                    self.stdout.write("\n--- Storing Data to Database ---")
-                    self._store_data_to_db(
-                        timestamp=forecast_time,
-                        location_name=location_name,
-                        cloud_percentage=cloud_percentage,
-                        full_screenshot_path=full_ss_before,
-                        drag_image_path=cropped_tn_path
+                    full_screenshots_dir, drag_images_dir, analyzed_crops_dir = self._get_image_analysis_directories(timestamp_str)
+                    self.stdout.write(f"Output directories created/ensured for this run:\n   Full: {full_screenshots_dir}\n   Drag: {drag_images_dir}\n   Analyzed: {analyzed_crops_dir}")
+
+                    full_ss_before, cropped_tn_path, full_ss_after = self._automate_screenshot_capture(
+                        driver, wait, timestamp_str, full_screenshots_dir, drag_images_dir, analyzed_crops_dir
                     )
 
-                    json_data = {
-                        "timestamp": forecast_time.strftime("%Y-%m-%d %H:%M:%S"),
-                        "city": location_name,
-                        "cloud_percentage": f"{cloud_percentage:.2f}%",
-                        "type": "adhani_solar"
-                    }
-                    base_image_dir = os.path.dirname(full_screenshots_dir)
-                    json_output_path = os.path.join(base_image_dir, f"cloud_analysis_{forecast_time.strftime('%Y%m%d_%H%M%S')}.json")
-                    with open(json_output_path, "w") as f:
-                        json.dump(json_data, f, indent=4)
-                    self.stdout.write(self.style.SUCCESS(f"JSON data saved locally to: {json_output_path}"))
+                    if not cropped_tn_path:
+                        self.stderr.write(self.style.ERROR("Failed to get the cropped Tamil Nadu image. Skipping analysis and database storage for this cycle."))
+                        time.sleep(300)
+                        continue
 
-                    # PUSH THE JSON DATA TO THE API ENDPOINT
-                    self._push_data_to_url(json_data, self.API_ENDPOINT_URL)
+                    self.stdout.write("\n--- Starting Image Analysis ---")
+                    cloud_percentage = self._analyze_cloud_percentage(cropped_tn_path)
 
-                else:
-                    self.stderr.write(self.style.WARNING("Cloud percentage analysis failed. Data not stored to DB or pushed for this cycle."))
+                    if cloud_percentage is not None:
+                        forecast_time = current_time + timedelta(minutes=10)
+                        location_name = "Ramanathapuram"
 
-                self.stdout.write("\nFinished current automation cycle. Waiting for next run...\n")
-                time.sleep(600)
+                        self.stdout.write("\n--- Storing Data to Database ---")
+                        self._store_data_to_db(
+                            timestamp=forecast_time,
+                            location_name=location_name,
+                            cloud_percentage=cloud_percentage,
+                            full_screenshot_path=full_ss_before,
+                            drag_image_path=cropped_tn_path
+                        )
+
+                        json_data = {
+                            "timestamp": forecast_time.strftime("%Y-%m-%d %H:%M:%S"),
+                            "city": location_name,
+                            "cloud_percentage": f"{cloud_percentage:.2f}%",
+                            "type": "adhani_solar"
+                        }
+                        base_image_dir = os.path.dirname(full_screenshots_dir)
+                        json_output_path = os.path.join(base_image_dir, f"cloud_analysis_{forecast_time.strftime('%Y%m%d_%H%M%S')}.json")
+                        with open(json_output_path, "w") as f:
+                            json.dump(json_data, f, indent=4)
+                        self.stdout.write(self.style.SUCCESS(f"JSON data saved locally to: {json_output_path}"))
+
+                        self._push_data_to_url(json_data, self.API_ENDPOINT_URL)
+                    else:
+                        self.stderr.write(self.style.WARNING("Cloud percentage analysis failed. Data not stored to DB or pushed for this cycle."))
+                except Exception as e:
+                    self.stderr.write(self.style.ERROR(f"Error in automation cycle: {e}"))
+                finally:
+                    self.stdout.write("\nFinished current automation cycle. Waiting for next run...\n")
+                    time.sleep(600)
 
         except Exception as e:
             self.stderr.write(self.style.ERROR(f"Critical error in main automation loop: {e}"))
