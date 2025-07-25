@@ -18,6 +18,7 @@ import numpy as np
 import pytz
 import json
 import requests
+
 class Command(BaseCommand):
     help = 'Automates screenshot capture from Windy.com, crops, analyzes ramanadhapuram_forecast levels, and stores data.'
 
@@ -30,6 +31,7 @@ class Command(BaseCommand):
     CROP_BOX_TN_REGION = (760, 180, 920, 440)
 
     API_ENDPOINT_URL = "http://172.16.7.118:8003/api/tamilnadu/satellite/push.windy_radar_data.php?type=adhani_solar"
+
     def _round_to_nearest_minutes(self, dt_object, minutes=15):
         total_minutes = dt_object.hour * 60 + dt_object.minute + dt_object.second / 60.0
         rounded_total_minutes = round(total_minutes / minutes) * minutes
@@ -144,18 +146,48 @@ class Command(BaseCommand):
                 self.stderr.write(self.style.ERROR(f"Could not read image with OpenCV (might be corrupted or not an image): {image_path}"))
                 return None
             hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-            # Basic: Only detect white/light gray clouds
-            lower_white = np.array([0, 0, 180])
-            upper_white = np.array([179, 70, 255])
-            mask = cv2.inRange(hsv, lower_white, upper_white)
+
+            # Define multiple cloud-like HSV ranges
+            lower_white = np.array([0, 0, 190])
+            upper_white = np.array([180, 60, 255])
+
+            lower_gray = np.array([0, 0, 120])
+            upper_gray = np.array([180, 50, 200])
+
+            lower_brown = np.array([5, 50, 100])
+            upper_brown = np.array([25, 200, 200])
+
+            lower_blue = np.array([90, 15, 90])
+            upper_blue = np.array([130, 90, 255])
+
+            # Create masks for each range
+            mask_white = cv2.inRange(hsv, lower_white, upper_white)
+            mask_gray = cv2.inRange(hsv, lower_gray, upper_gray)
+            mask_brown = cv2.inRange(hsv, lower_brown, upper_brown)
+            mask_blue = cv2.inRange(hsv, lower_blue, upper_blue)
+
+            # Combine masks
+            final_mask = cv2.bitwise_or(mask_white, mask_gray)
+            final_mask = cv2.bitwise_or(final_mask, mask_brown)
+            final_mask = cv2.bitwise_or(final_mask, mask_blue)
+
+            # Calculate coverage
             total_pixels = img.shape[0] * img.shape[1]
-            cloudy_pixels = cv2.countNonZero(mask)
+            cloudy_pixels = cv2.countNonZero(final_mask)
             cloud_percentage = (cloudy_pixels / total_pixels) * 100 if total_pixels > 0 else 0.0
+
+            # Optional: Save debug mask
+            # debug_path = image_path.replace(".png", "_cloudmask_debug.png")
+            # cv2.imwrite(debug_path, final_mask)
+            # self.stdout.write(self.style.WARNING(f"Debug cloud mask saved at: {debug_path}"))
+
             self.stdout.write(self.style.SUCCESS(f"Analyzed {os.path.basename(image_path)}: {cloud_percentage:.2f}% cloud coverage."))
             return cloud_percentage
+
         except Exception as e:
             self.stderr.write(self.style.ERROR(f"Error during image analysis for {image_path}: {e}"))
             return None
+
 
     def _store_data_to_db(self, timestamp, location_name, cloud_percentage, full_screenshot_path, drag_image_path):
         try:
@@ -204,7 +236,7 @@ class Command(BaseCommand):
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
             chrome_options.add_experimental_option('useAutomationExtension', False)
             chrome_options.add_argument("--window-size=1920,1080")
-            chrome_options.add_argument("--log-level=3")  # Suppress Chrome warnings/errors in console
+            chrome_options.add_argument("--log-level=3")   # Suppress Chrome warnings/errors in console
             # For debugging, remove headless if you want to see the browser:
             # chrome_options.add_argument('--headless')
             # chrome_options.add_argument('--disable-gpu')
@@ -256,7 +288,7 @@ class Command(BaseCommand):
                         json_data = {
                             "timestamp": forecast_time.strftime("%Y-%m-%d %H:%M:%S"),
                             "city": location_name,
-                            "cloud_percentage": f"{cloud_percentage:.2f}%",
+                            "values": f"{cloud_percentage:.2f}%",
                             "type": "adhani_solar"
                         }
                         base_image_dir = os.path.dirname(full_screenshots_dir)
